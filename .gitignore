@@ -1,0 +1,8 @@
+.env
+chrome-data/
+node_modules/
+logs/
+comment-api/.env
+comment-api/.venv
+comment-api/__pycache__/
+comment-api/**/*.pyc

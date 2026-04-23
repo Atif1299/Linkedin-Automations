@@ -1,0 +1,29 @@
+{
+  "name": "schmoozzer-linkedin-automation",
+  "version": "1.0.0",
+  "description": "LinkedIn engagement automation — Schmoozzer + Marina's core engine",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "enrich": "node run-enrichment.js",
+    "seed-keywords": "node seed-exclusion-keywords.js",
+    "import-targets": "node import-targets.js",
+    "comment-api": "cd comment-api && python -m uvicorn app:app --host 127.0.0.1 --port 8000",
+    "sync-comment-api-env": "node sync-comment-api-env.js",
+    "readiness": "node readiness-check.js",
+    "readiness:env": "node readiness-check.js --env-only",
+    "chrome-bootstrap": "node chrome-bootstrap.js",
+    "automation-smoke": "node automation-smoke.js"
+  },
+  "dependencies": {
+    "electron": "^29.0.0",
+    "playwright": "^1.43.0",
+    "@supabase/supabase-js": "^2.42.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {},
+  "author": "G3 Labs",
+  "license": "UNLICENSED",
+  "private": true
+}

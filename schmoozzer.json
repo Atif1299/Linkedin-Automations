@@ -1,0 +1,91 @@
+{
+  "supabaseUrl": "YOUR_SUPABASE_URL",
+  "supabaseKey": "YOUR_SUPABASE_ANON_KEY",
+  "commentApiUrl": "http://127.0.0.1:8000/generate-comment",
+  "userDataDir": "./chrome-data",
+  "timing": {
+    "operatingHours": {
+      "start": 1.3333333333333333,
+      "end": 3.6666666666666665
+    },
+    "lunchBreak": {
+      "earliest": 11.5,
+      "latest": 13,
+      "duration": 60
+    },
+    "session": {
+      "minComments": 7,
+      "maxComments": 10,
+      "breakMinMinutes": 15,
+      "breakMaxMinutes": 25
+    },
+    "daily": {
+      "startVarianceMinutes": 0,
+      "activityTaper": false
+    },
+    "alwaysOn": true,
+    "timezone": "America/New_York",
+    "postFeedSettleMs": [
+      400,
+      900
+    ],
+    "actionDelaysMs": {
+      "between_posts": [
+        200,
+        600
+      ],
+      "before_typing": [
+        400,
+        1200
+      ],
+      "after_typing": [
+        200,
+        600
+      ],
+      "after_submit": [
+        300,
+        800
+      ],
+      "default": [
+        150,
+        400
+      ]
+    }
+  },
+  "mouse": {
+    "overshootProbability": 0.2,
+    "idleDriftInterval": 8000,
+    "jitterAmplitude": 2,
+    "baseSpeed": 1.0
+  },
+  "typing": {
+    "baseDelayMin": 50,
+    "baseDelayMax": 120,
+    "typoFrequency": 0.28,
+    "wordBoundaryExtraDelay": 80,
+    "punctuationExtraDelay": 150
+  },
+  "scroll": {
+    "readPauseMin": 400,
+    "readPauseMax": 1200,
+    "skipPauseMin": 80,
+    "skipPauseMax": 350,
+    "distanceMin": 200,
+    "distanceMax": 600,
+    "scrollBackProbability": 0.02,
+    "fastScroll": true,
+    "feedScrollHover": ".scaffold-layout__main, .application-outlet, main",
+    "programmaticFeedScroll": true
+  },
+  "filter": {
+    "maxPostAgeHours": 48,
+    "requireFollowedTarget": false
+  },
+  "variety": {
+    "historySize": 20,
+    "maxConsecutiveSameStart": 1,
+    "maxQuestionsInLast10": 2,
+    "minWordCount": 8,
+    "maxWordCount": 55
+  }
+}
