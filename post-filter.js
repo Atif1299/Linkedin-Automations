@@ -215,6 +215,7 @@ class PostFilter {
 
   /**
    * Log a post to the database (whether we comment or skip)
+   * Uses upsert to avoid duplicate key errors
    */
   async logPost(post, filterResult, commentText = null, options = {}) {
     const dryRun = options.dryRun === true;
@@ -242,9 +243,13 @@ class PostFilter {
       skip_detail: filterResult.detail || null,
     };
 
+    // Use upsert to handle duplicates - update if post_id already exists
     const { error } = await this.supabase
       .from('posts_seen')
-      .insert(record);
+      .upsert(record, { 
+        onConflict: 'post_id',
+        ignoreDuplicates: true 
+      });
 
     if (error) {
       console.error('Failed to log post:', error);

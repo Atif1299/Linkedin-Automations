@@ -227,7 +227,11 @@ class Orchestrator {
         if (!filterResult.pass) {
           session.postsSkipped++;
           logger.debug(`Skip: ${filterResult.reason} - ${(post.authorName || '').slice(0, 40)}`);
-          await this.filter.logPost(post, filterResult);
+          
+          // Only log if not already seen (avoid duplicate inserts)
+          if (filterResult.reason !== 'already_seen') {
+            await this.filter.logPost(post, filterResult);
+          }
 
           // Brief pause even for skipped posts (we "saw" them)
           await this.scroller.skipPause();
@@ -405,26 +409,42 @@ class Orchestrator {
       }
       
       function extractPostId(el) {
-        // Check componentkey for URN patterns
-        const ck = el.getAttribute('componentkey') || '';
-        const urnMatch = ck.match(/urn:li:(ugcPost|activity):(\d+)/);
-        if (urnMatch) {
-          return `urn:li:${urnMatch[1]}:${urnMatch[2]}`;
-        }
-        
-        // Look for nested componentkey with URN
-        const nested = el.querySelector('[componentkey*="urn:li:"]');
-        if (nested) {
-          const nck = nested.getAttribute('componentkey') || '';
-          const nMatch = nck.match(/urn:li:(ugcPost|activity):(\d+)/);
-          if (nMatch) {
-            return `urn:li:${nMatch[1]}:${nMatch[2]}`;
+        // Strategy 1: Look for URN in any componentkey attribute (nested elements too)
+        const allWithCk = el.querySelectorAll('[componentkey]');
+        for (const node of [el, ...allWithCk]) {
+          const ck = node.getAttribute('componentkey') || '';
+          // Match patterns like urn:li:ugcPost:7452736980557180928 or urn:li:activity:123456
+          const urnMatch = ck.match(/urn:li:(ugcPost|activity):(\d+)/);
+          if (urnMatch) {
+            return `urn:li:${urnMatch[1]}:${urnMatch[2]}`;
           }
         }
         
-        // Fallback to data-urn
+        // Strategy 2: Look for data-testid with activity pattern
+        const testIdEl = el.querySelector('[data-testid*="activity"], [data-testid*="ugcPost"]');
+        if (testIdEl) {
+          const tid = testIdEl.getAttribute('data-testid') || '';
+          const tidMatch = tid.match(/(activity|ugcPost)[^-]*-?(\d+)/i);
+          if (tidMatch) {
+            return `urn:li:${tidMatch[1].toLowerCase()}:${tidMatch[2]}`;
+          }
+        }
+        
+        // Strategy 3: Fallback to data-urn
         const nestedUrn = el.querySelector('[data-urn]')?.getAttribute('data-urn');
-        return el.getAttribute('data-urn') || el.dataset?.urn || nestedUrn;
+        if (nestedUrn) {
+          return nestedUrn;
+        }
+        
+        // Strategy 4: Extract from main componentkey using the hash-like ID
+        const mainCk = el.getAttribute('componentkey') || '';
+        // Pattern like "expanded14NTEbCsBRqkzOiOW1Ab9ub_8yYgHsBVuJ3le70d98sFeedType"
+        const hashMatch = mainCk.match(/expanded([a-zA-Z0-9_]+)FeedType/);
+        if (hashMatch) {
+          return `feed_${hashMatch[1]}`;
+        }
+        
+        return el.getAttribute('data-urn') || el.dataset?.urn || null;
       }
 
       const posts = [];
@@ -606,14 +626,29 @@ class Orchestrator {
     }
 
     // Find and click the comment button
-    // Try componentkey-based selector first, then fallback to svg icon
-    let btn = card.locator('[componentkey*="commentButtonSection"] button').first();
+    // The comment button might be inside the card or in a sibling element
+    let btn = card.locator('button').filter({ hasText: 'Comment' }).first();
+    
     if ((await btn.count()) === 0) {
-      btn = card.locator('button:has(svg#comment-small)').first();
+      btn = card.locator('[componentkey*="commentButtonSection"] button').first();
     }
     if ((await btn.count()) === 0) {
-      // Final fallback: any button containing "Comment" text
-      btn = card.locator('button').filter({ hasText: 'Comment' }).first();
+      btn = card.locator('button:has(svg[id*="comment"])').first();
+    }
+    
+    // If not found in card, try page-wide search for Comment button
+    // (LinkedIn sometimes places the social bar outside the listitem)
+    if ((await btn.count()) === 0) {
+      const pageButtons = await this.page.locator('button').filter({ hasText: 'Comment' }).all();
+      if (pageButtons.length > 0) {
+        // Use the first visible one
+        for (const pageBtn of pageButtons) {
+          if (await pageBtn.isVisible()) {
+            btn = pageBtn;
+            break;
+          }
+        }
+      }
     }
     
     if ((await btn.count()) > 0) {
@@ -622,7 +657,8 @@ class Orchestrator {
       });
       await this._sleep(this._randomDelay(400, 1200));
     } else {
-      logger.warn('Comment button not found in post card');
+      logger.warn('Comment button not found for post', { postId: post.postId });
+      return;
     }
 
     // Wait for comment input to appear

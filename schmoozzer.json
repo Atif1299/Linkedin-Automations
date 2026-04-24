@@ -70,11 +70,11 @@
     "readPauseMax": 1200,
     "skipPauseMin": 80,
     "skipPauseMax": 350,
-    "distanceMin": 200,
-    "distanceMax": 600,
+    "distanceMin": 600,
+    "distanceMax": 1200,
     "scrollBackProbability": 0.02,
     "fastScroll": true,
-    "feedScrollHover": ".scaffold-layout__main, .application-outlet, main",
+    "feedScrollHover": "[data-testid=\"mainFeed\"], .scaffold-layout__main",
     "programmaticFeedScroll": true
   },
   "filter": {

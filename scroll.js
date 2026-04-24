@@ -25,6 +25,15 @@ class HumanScroller {
     return min + Math.random() * (max - min);
   }
 
+  async _getFeedContainer() {
+    const selectors = ['#workspace', 'main', '.scaffold-finite-scroll'];
+    for (const selector of selectors) {
+      const el = await this.page.$(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+
   /**
    * Scroll down by a random distance with easing
    */
@@ -34,40 +43,21 @@ class HumanScroller {
       this.config.distanceMax
     );
     const delta = Math.round(scrollDist);
-
-    const hoverSel = this.config.feedScrollHover;
-    if (hoverSel) {
-      try {
-        const loc = this.page.locator(hoverSel).first();
-        if (await loc.count() > 0) {
-          await loc.hover({ position: { x: 200, y: 360 }, timeout: 5000 });
-        }
-      } catch (_) {
-        /* ignore */
-      }
-    }
+    const container = await this._getFeedContainer();
 
     if (this.config.programmaticFeedScroll) {
-      await this.page.evaluate((d) => {
-        const candidates = [
-          document.querySelector('[data-testid="mainFeed"]'),
-          document.querySelector('.scaffold-layout__main'),
-          document.querySelector('.scaffold-layout__list'),
-          document.querySelector('.application-outlet'),
-          document.querySelector('main[role="main"]'),
-          document.querySelector('main'),
-        ].filter(Boolean);
-        for (const el of candidates) {
-          if (el.scrollHeight > el.clientHeight + 80) {
-            el.scrollBy(0, d);
-            return;
-          }
-        }
-        const root = document.scrollingElement || document.documentElement;
-        root.scrollBy(0, d);
-      }, delta);
-      await this.page.mouse.wheel(0, delta * 0.12).catch(() => {});
-      await this._sleep(this._randomDelay(40, 120));
+      if (container) {
+        // Bulletproof scroll: directly manipulate the container's scroll position smoothly
+        await container.evaluate((el, y) => el.scrollBy({ top: y, behavior: 'smooth' }), delta);
+      } else {
+        // Fallback
+        await this.page.keyboard.press('PageDown');
+        await this._sleep(100);
+        await this.page.keyboard.press('PageDown');
+      }
+      
+      // Wait for content to load
+      await this._sleep(this._randomDelay(400, 800));
       return;
     }
 
@@ -85,7 +75,11 @@ class HumanScroller {
       const progress = i / steps;
       const easedStep = stepSize * (1 - Math.pow(progress, 2) * 0.5);
 
-      await this.page.mouse.wheel(0, easedStep);
+      if (container) {
+        await container.evaluate((el, y) => el.scrollBy(0, y), easedStep);
+      } else {
+        await this.page.mouse.wheel(0, easedStep);
+      }
       await this._sleep(this._randomDelay(stepSleepMin, stepSleepMax));
     }
 
@@ -99,9 +93,14 @@ class HumanScroller {
     const scrollDist = distance || this._randomDelay(100, 250);
     const steps = 5 + Math.floor(Math.random() * 3);
     const stepSize = scrollDist / steps;
+    const container = await this._getFeedContainer();
 
     for (let i = 0; i < steps; i++) {
-      await this.page.mouse.wheel(0, -stepSize);
+      if (container) {
+        await container.evaluate((el, y) => el.scrollBy(0, -y), stepSize);
+      } else {
+        await this.page.mouse.wheel(0, -stepSize);
+      }
       await this._sleep(this._randomDelay(20, 50));
     }
 
@@ -160,6 +159,10 @@ class HumanScroller {
 
       // Check if we've reached the end of loaded content
       const atBottom = await this.page.evaluate(() => {
+        const container = document.querySelector('#workspace') || document.querySelector('main');
+        if (container) {
+          return container.scrollTop + container.clientHeight >= container.scrollHeight - 200;
+        }
         const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
         const scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
         const clientHeight = document.documentElement.clientHeight;
@@ -172,6 +175,10 @@ class HumanScroller {
 
         // Check again — if still at bottom, we're done
         const stillAtBottom = await this.page.evaluate(() => {
+          const container = document.querySelector('#workspace') || document.querySelector('main');
+          if (container) {
+            return container.scrollTop + container.clientHeight >= container.scrollHeight - 200;
+          }
           const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
           const scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
           const clientHeight = document.documentElement.clientHeight;
