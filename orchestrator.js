@@ -148,6 +148,9 @@ class Orchestrator {
     const session = this.timing.startSession();
     logger.info(`Session started: target ${session.commentTarget} comments`);
 
+    // Track skip reasons at info level (helps debug when LOG_LEVEL=info)
+    const skipReasonCounts = new Map();
+
     // Log session to database
     const { data: sessionRecord } = await this.supabase
       .from('sessions')
@@ -227,6 +230,10 @@ class Orchestrator {
         if (!filterResult.pass) {
           session.postsSkipped++;
           logger.debug(`Skip: ${filterResult.reason} - ${(post.authorName || '').slice(0, 40)}`);
+          skipReasonCounts.set(
+            filterResult.reason,
+            (skipReasonCounts.get(filterResult.reason) || 0) + 1
+          );
           
           // Only log if not already seen (avoid duplicate inserts)
           if (filterResult.reason !== 'already_seen') {
@@ -271,9 +278,21 @@ class Orchestrator {
         }
 
         // Type and submit the comment
-        await this._postComment(post, finalComment);
+        const postedOk = await this._postComment(post, finalComment);
+        if (!postedOk) {
+          // If we couldn't actually open/type/submit, do NOT count it as posted.
+          const failResult = { pass: false, reason: 'comment_failed', detail: 'ui_submit_failed', targetId: filterResult.targetId };
+          session.postsSkipped++;
+          skipReasonCounts.set(
+            failResult.reason,
+            (skipReasonCounts.get(failResult.reason) || 0) + 1
+          );
+          await this.filter.logPost(post, failResult);
+          await this.scroller.skipPause();
+          continue;
+        }
 
-        // Record
+        // Record (only after successful submit, or dry-run)
         this.variety.record(finalComment);
         await this.filter.logPost(post, filterResult, finalComment, { dryRun: this.dryRun });
 
@@ -318,7 +337,15 @@ class Orchestrator {
         .eq('id', sessionRecord.id);
     }
 
-    logger.info(`Session ended: ${session.commentsCompleted} comments, ${session.postsScanned} scanned, ${session.postsSkipped} skipped`);
+    const skipSummary = [...skipReasonCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(', ');
+    logger.info(
+      `Session ended: ${session.commentsCompleted} comments, ${session.postsScanned} scanned, ${session.postsSkipped} skipped` +
+        (skipSummary ? ` (top skips: ${skipSummary})` : '')
+    );
   }
 
   /**
@@ -559,9 +586,28 @@ class Orchestrator {
         if (!textEl) textEl = el.querySelector('[data-testid="expandable-text-box"]');
         if (!textEl && sel.feed.postText) textEl = el.querySelector(sel.feed.postText);
 
+        // Author extraction: prefer main2.py logic, but fall back to existing JS approach
         const pyAuthor = extractAuthorPyStyle(el);
-        const authorName = pyAuthor.authorName || '';
-        const authorUrl = pyAuthor.authorUrl || '';
+        let authorName = pyAuthor.authorName || '';
+        let authorUrl = pyAuthor.authorUrl || '';
+
+        if (!authorName && !authorUrl) {
+          // Previous logic fallback (kept because LinkedIn DOM varies by experiment)
+          const authorLink = el.querySelector('a[href*="/in/"], a[href*="/company/"]');
+          authorUrl = authorLink?.href || '';
+
+          if (authorLink) {
+            const nameEl =
+              authorLink.querySelector('p, span') ||
+              authorLink.closest('div')?.querySelector('p.fa3ef5cf, p._3a5099c8');
+            authorName = nameEl?.textContent?.trim() || '';
+          }
+          if (!authorName && sel.feed.postAuthor) {
+            const authorEl = el.querySelector(sel.feed.postAuthor);
+            authorName = authorEl?.textContent?.trim() || '';
+          }
+          authorName = cleanText(authorName);
+        }
         
         // Timestamp - look for patterns like "1d", "2h", "1w"
         let timestamp = '';
@@ -640,6 +686,13 @@ class Orchestrator {
 
   /** Find post card by URN in componentkey attribute */
   _componentKeySelector(postId) {
+    // Our extractor sometimes returns synthetic IDs like "feed_<hash>" when it
+    // can't find a real URN. Convert back to a componentkey fragment.
+    if (String(postId || '').startsWith('feed_')) {
+      const hash = String(postId).slice('feed_'.length);
+      const frag = this._escapeSelector(`expanded${hash}FeedType`);
+      return `[componentkey*="${frag}"]`;
+    }
     const id = this._escapeSelector(postId);
     return `[componentkey*="${id}"]`;
   }
@@ -654,7 +707,8 @@ class Orchestrator {
    * Post card scope: find the post card element containing the given postId
    * Tries multiple strategies: componentkey, role+componentkey, data-urn, class patterns
    */
-  _postCardScope(postId) {
+  _postCardScope(post) {
+    const postId = post?.postId;
     // Strategy 1: Find by componentkey containing the URN
     const byComponentKey = this.page
       .locator(`[role="listitem"]`)
@@ -676,7 +730,14 @@ class Orchestrator {
       .filter({ has: this.page.locator(this._dataUrnSelector(postId)) })
       .first();
 
-    return { byComponentKey, byDataUrn, byListitem, byLegacy };
+    // Strategy 5: As a last resort, locate a listitem by text snippet.
+    // This helps when postId is synthetic ("unknown_*") but post text is present.
+    const snippet = String(post?.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const byText = snippet
+      ? this.page.locator('[role="listitem"]').filter({ hasText: snippet }).first()
+      : this.page.locator('__never__');
+
+    return { byComponentKey, byDataUrn, byListitem, byLegacy, byText };
   }
 
   /**
@@ -688,10 +749,10 @@ class Orchestrator {
         postId: post.postId,
         preview: comment.substring(0, 120),
       });
-      return;
+      return true;
     }
 
-    const { byComponentKey, byDataUrn, byListitem, byLegacy } = this._postCardScope(post.postId);
+    const { byComponentKey, byDataUrn, byListitem, byLegacy, byText } = this._postCardScope(post);
     
     // Try each strategy in order until we find the card
     let card = byComponentKey;
@@ -705,8 +766,11 @@ class Orchestrator {
       card = byLegacy;
     }
     if ((await card.count()) === 0) {
+      card = byText;
+    }
+    if ((await card.count()) === 0) {
       logger.warn('Could not find post element for commenting', { postId: post.postId });
-      return;
+      return false;
     }
 
     // Find and click the comment button
@@ -742,7 +806,7 @@ class Orchestrator {
       await this._sleep(this._randomDelay(400, 1200));
     } else {
       logger.warn('Comment button not found for post', { postId: post.postId });
-      return;
+      return false;
     }
 
     // Wait for comment input to appear
@@ -766,7 +830,7 @@ class Orchestrator {
     await inputLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => null);
     if ((await inputLoc.count()) === 0) {
       logger.warn('Comment input not found after clicking comment button');
-      return;
+      return false;
     }
 
     await this._sleep(this.timing.getActionDelay('before_typing'));
@@ -795,6 +859,7 @@ class Orchestrator {
       logger.warn('Comment submit control not found');
     }
     await this._sleep(this._randomDelay(500, 1500));
+    return true;
   }
 
   async _updateDailyStats() {
