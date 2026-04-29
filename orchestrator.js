@@ -326,6 +326,97 @@ class Orchestrator {
    */
   async _extractVisiblePosts() {
     return await this.page.evaluate((sel) => {
+      // --- Extraction logic aligned to `main2.py` (Python) ---
+      // Selectors from main2.py (the user says these are the correct ones)
+      const PY_POST_SELECTOR = "div[role='listitem']";
+      const PY_TEXT_SELECTOR = "[data-testid='expandable-text-box']";
+      const PY_PROFILE_LINK_SELECTOR = "a[href*='/in/'], a[href*='/company/']";
+
+      function cleanText(t) {
+        return String(t || '').replace(/\s+/g, ' ').trim();
+      }
+
+      function isValidAuthorLine(line) {
+        const clean = cleanText(line);
+        if (!clean) return false;
+        if (clean.length >= 80) return false;
+        const low = clean.toLowerCase();
+        if (low.includes('comment')) return false;
+        if (low.includes('followers')) return false;
+        if (low.includes('liked')) return false;
+        if (low.includes('reposted')) return false;
+        if (low.includes('hour')) return false;
+        if (low.includes('ago')) return false;
+        if (clean.includes('•')) return false;
+        if (clean.includes('http')) return false;
+        return true;
+      }
+
+      function extractAuthorPyStyle(postEl) {
+        // Priority: scan sections after <hr>, skipping action-heavy sections
+        try {
+          const hrDivs = postEl.querySelectorAll('hr + div');
+          if (hrDivs && hrDivs.length > 0) {
+            for (const section of hrDivs) {
+              const btnCount = section.querySelectorAll('button')?.length || 0;
+              if (btnCount > 2) {
+                continue;
+              }
+              const links = section.querySelectorAll(PY_PROFILE_LINK_SELECTOR);
+              if (!links || links.length === 0) continue;
+
+              const maxLinks = Math.min(links.length, 3);
+              for (let j = 0; j < maxLinks; j++) {
+                const link = links[j];
+                const href = link?.getAttribute('href') || '';
+                if (!href) continue;
+                const raw = (link.textContent || '').trim();
+                if (!raw) continue;
+                const lines = raw.split('\n');
+                for (const line of lines) {
+                  if (isValidAuthorLine(line)) {
+                    return {
+                      authorName: cleanText(line),
+                      authorUrl: href,
+                    };
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          /* ignore */
+        }
+
+        // Fallback: scan the whole post for /in/ or /company/ links and pick first valid label
+        try {
+          const links = postEl.querySelectorAll(PY_PROFILE_LINK_SELECTOR);
+          if (links && links.length > 0) {
+            const maxLinks = Math.min(links.length, 8);
+            for (let i = 0; i < maxLinks; i++) {
+              const link = links[i];
+              const href = link?.getAttribute('href') || '';
+              if (!href) continue;
+              const raw = (link.textContent || '').trim();
+              if (!raw) continue;
+              const lines = raw.split('\n');
+              for (const line of lines) {
+                if (isValidAuthorLine(line)) {
+                  return {
+                    authorName: cleanText(line),
+                    authorUrl: href,
+                  };
+                }
+              }
+            }
+          }
+        } catch (e) {
+          /* ignore */
+        }
+
+        return { authorName: '', authorUrl: '' };
+      }
+
       function matchesPostCard(el) {
         if (!el || !el.matches) {
           return false;
@@ -384,7 +475,8 @@ class Orchestrator {
         // Final fallback using postCardFallback
         const fb = sel.feed.postCardFallback;
         if (!fb) {
-          return [];
+          // Last resort: main2.py style selector (very broad, but we'll filter by text presence later)
+          return [...document.querySelectorAll(PY_POST_SELECTOR)];
         }
         const nodes = [...document.querySelectorAll(fb)];
         const byKey = new Map();
@@ -462,28 +554,14 @@ class Orchestrator {
           seenIds.add(postId);
         }
         
-        // Find post text using data-testid (most stable)
-        let textEl = el.querySelector('[data-testid="expandable-text-box"]');
-        if (!textEl) {
-          textEl = el.querySelector(sel.feed.postText);
-        }
-        
-        // Find author info - look for links to /in/ or /company/
-        const authorLink = el.querySelector('a[href*="/in/"], a[href*="/company/"]');
-        const authorUrl = authorLink?.href || '';
-        
-        // Author name - often in a paragraph near the author link
-        let authorName = '';
-        if (authorLink) {
-          // Look for name text near the link
-          const nameEl = authorLink.querySelector('p, span') || 
-                         authorLink.closest('div')?.querySelector('p.fa3ef5cf, p._3a5099c8');
-          authorName = nameEl?.textContent?.trim() || '';
-        }
-        if (!authorName) {
-          const authorEl = el.querySelector(sel.feed.postAuthor);
-          authorName = authorEl?.textContent?.trim() || '';
-        }
+        // Find post text using main2.py's selector first
+        let textEl = el.querySelector(PY_TEXT_SELECTOR);
+        if (!textEl) textEl = el.querySelector('[data-testid="expandable-text-box"]');
+        if (!textEl && sel.feed.postText) textEl = el.querySelector(sel.feed.postText);
+
+        const pyAuthor = extractAuthorPyStyle(el);
+        const authorName = pyAuthor.authorName || '';
+        const authorUrl = pyAuthor.authorUrl || '';
         
         // Timestamp - look for patterns like "1d", "2h", "1w"
         let timestamp = '';
@@ -505,11 +583,17 @@ class Orchestrator {
         const isJob = !!el.querySelector(sel.feed.jobBadge) || 
                       (el.textContent || '').toLowerCase().includes('job posting');
 
+        const text = cleanText(textEl?.textContent || '');
+        // Skip empty cards (broad selector can pick non-post listitems)
+        if (!text) {
+          continue;
+        }
+
         posts.push({
           postId: postId || `unknown_${Date.now()}_${Math.random()}`,
           authorName: authorName,
           authorUrl: authorUrl,
-          text: textEl?.textContent?.trim() || '',
+          text,
           timestamp: timestamp,
           isJobPosting: isJob,
           type: isJob ? 'job' : 'post',
