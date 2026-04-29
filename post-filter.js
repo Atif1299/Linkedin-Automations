@@ -17,9 +17,39 @@ class PostFilter {
       ...config,
     };
     this.exclusionKeywords = [];
-    this.targetCompanies = new Map(); // linkedin_url -> target record
+    this.targetCompanies = new Map(); // key -> target record (multiple keys per target)
     this.lastKeywordRefresh = 0;
     this.keywordRefreshInterval = 5 * 60 * 1000; // refresh every 5 minutes
+  }
+
+  _normalizeTextKey(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  _linkedinCompanySlug(url) {
+    const s = String(url || '');
+    if (!s) return null;
+    // Accept relative or absolute URLs, and strip query/hash.
+    // Examples:
+    //  - https://www.linkedin.com/company/foo-bar/
+    //  - /company/foo-bar/
+    //  - https://www.linkedin.com/company/foo-bar?trk=...
+    const m = s.match(/\/company\/([^\/?#]+)/i);
+    if (!m) return null;
+    const slug = (m[1] || '').trim().toLowerCase();
+    return slug || null;
+  }
+
+  _addTargetKey(key, target) {
+    const k = this._normalizeTextKey(key);
+    if (!k) return;
+    // Prefer first insert; don't overwrite to keep stable mapping
+    if (!this.targetCompanies.has(k)) {
+      this.targetCompanies.set(k, target);
+    }
   }
 
   /**
@@ -65,17 +95,17 @@ class PostFilter {
     this.targetCompanies.clear();
     for (const target of data) {
       if (target.linkedin_company) {
-        this.targetCompanies.set(
-          target.linkedin_company.toLowerCase(),
-          target
-        );
+        // Index by full URL and by extracted /company/<slug>
+        this._addTargetKey(target.linkedin_company, target);
+        const slug = this._linkedinCompanySlug(target.linkedin_company);
+        if (slug) {
+          this._addTargetKey(`company:${slug}`, target);
+          this._addTargetKey(slug, target);
+        }
       }
       // Also index by company name for fuzzy matching
       if (target.company_name) {
-        this.targetCompanies.set(
-          target.company_name.toLowerCase(),
-          target
-        );
+        this._addTargetKey(target.company_name, target);
       }
     }
   }
@@ -138,17 +168,26 @@ class PostFilter {
 
     // Check by URL
     if (authorUrl) {
-      const urlLower = authorUrl.toLowerCase();
+      const urlLower = this._normalizeTextKey(authorUrl);
+
+      // Fast-path: match by LinkedIn /company/<slug>
+      const authorSlug = this._linkedinCompanySlug(authorUrl);
+      if (authorSlug) {
+        const direct =
+          this.targetCompanies.get(`company:${authorSlug}`) ||
+          this.targetCompanies.get(authorSlug);
+        if (direct) return direct;
+      }
+
+      // Fallback: substring match (legacy behavior)
       for (const [key, target] of this.targetCompanies) {
-        if (urlLower.includes(key) || key.includes(urlLower)) {
-          return target;
-        }
+        if (urlLower.includes(key) || key.includes(urlLower)) return target;
       }
     }
 
     // Check by name
     if (authorName) {
-      const nameLower = authorName.toLowerCase().trim();
+      const nameLower = this._normalizeTextKey(authorName);
       const target = this.targetCompanies.get(nameLower);
       if (target) return target;
 

@@ -148,6 +148,9 @@ class Orchestrator {
     const session = this.timing.startSession();
     logger.info(`Session started: target ${session.commentTarget} comments`);
 
+    // Track skip reasons at info level (helps debug when LOG_LEVEL=info)
+    const skipReasonCounts = new Map();
+
     // Log session to database
     const { data: sessionRecord } = await this.supabase
       .from('sessions')
@@ -227,6 +230,10 @@ class Orchestrator {
         if (!filterResult.pass) {
           session.postsSkipped++;
           logger.debug(`Skip: ${filterResult.reason} - ${(post.authorName || '').slice(0, 40)}`);
+          skipReasonCounts.set(
+            filterResult.reason,
+            (skipReasonCounts.get(filterResult.reason) || 0) + 1
+          );
           
           // Only log if not already seen (avoid duplicate inserts)
           if (filterResult.reason !== 'already_seen') {
@@ -271,9 +278,21 @@ class Orchestrator {
         }
 
         // Type and submit the comment
-        await this._postComment(post, finalComment);
+        const postedOk = await this._postComment(post, finalComment);
+        if (!postedOk) {
+          // If we couldn't actually open/type/submit, do NOT count it as posted.
+          const failResult = { pass: false, reason: 'comment_failed', detail: 'ui_submit_failed', targetId: filterResult.targetId };
+          session.postsSkipped++;
+          skipReasonCounts.set(
+            failResult.reason,
+            (skipReasonCounts.get(failResult.reason) || 0) + 1
+          );
+          await this.filter.logPost(post, failResult);
+          await this.scroller.skipPause();
+          continue;
+        }
 
-        // Record
+        // Record (only after successful submit, or dry-run)
         this.variety.record(finalComment);
         await this.filter.logPost(post, filterResult, finalComment, { dryRun: this.dryRun });
 
@@ -318,7 +337,15 @@ class Orchestrator {
         .eq('id', sessionRecord.id);
     }
 
-    logger.info(`Session ended: ${session.commentsCompleted} comments, ${session.postsScanned} scanned, ${session.postsSkipped} skipped`);
+    const skipSummary = [...skipReasonCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(', ');
+    logger.info(
+      `Session ended: ${session.commentsCompleted} comments, ${session.postsScanned} scanned, ${session.postsSkipped} skipped` +
+        (skipSummary ? ` (top skips: ${skipSummary})` : '')
+    );
   }
 
   /**
@@ -326,6 +353,97 @@ class Orchestrator {
    */
   async _extractVisiblePosts() {
     return await this.page.evaluate((sel) => {
+      // --- Extraction logic aligned to `main2.py` (Python) ---
+      // Selectors from main2.py (the user says these are the correct ones)
+      const PY_POST_SELECTOR = "div[role='listitem']";
+      const PY_TEXT_SELECTOR = "[data-testid='expandable-text-box']";
+      const PY_PROFILE_LINK_SELECTOR = "a[href*='/in/'], a[href*='/company/']";
+
+      function cleanText(t) {
+        return String(t || '').replace(/\s+/g, ' ').trim();
+      }
+
+      function isValidAuthorLine(line) {
+        const clean = cleanText(line);
+        if (!clean) return false;
+        if (clean.length >= 80) return false;
+        const low = clean.toLowerCase();
+        if (low.includes('comment')) return false;
+        if (low.includes('followers')) return false;
+        if (low.includes('liked')) return false;
+        if (low.includes('reposted')) return false;
+        if (low.includes('hour')) return false;
+        if (low.includes('ago')) return false;
+        if (clean.includes('•')) return false;
+        if (clean.includes('http')) return false;
+        return true;
+      }
+
+      function extractAuthorPyStyle(postEl) {
+        // Priority: scan sections after <hr>, skipping action-heavy sections
+        try {
+          const hrDivs = postEl.querySelectorAll('hr + div');
+          if (hrDivs && hrDivs.length > 0) {
+            for (const section of hrDivs) {
+              const btnCount = section.querySelectorAll('button')?.length || 0;
+              if (btnCount > 2) {
+                continue;
+              }
+              const links = section.querySelectorAll(PY_PROFILE_LINK_SELECTOR);
+              if (!links || links.length === 0) continue;
+
+              const maxLinks = Math.min(links.length, 3);
+              for (let j = 0; j < maxLinks; j++) {
+                const link = links[j];
+                const href = link?.getAttribute('href') || '';
+                if (!href) continue;
+                const raw = (link.textContent || '').trim();
+                if (!raw) continue;
+                const lines = raw.split('\n');
+                for (const line of lines) {
+                  if (isValidAuthorLine(line)) {
+                    return {
+                      authorName: cleanText(line),
+                      authorUrl: href,
+                    };
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          /* ignore */
+        }
+
+        // Fallback: scan the whole post for /in/ or /company/ links and pick first valid label
+        try {
+          const links = postEl.querySelectorAll(PY_PROFILE_LINK_SELECTOR);
+          if (links && links.length > 0) {
+            const maxLinks = Math.min(links.length, 8);
+            for (let i = 0; i < maxLinks; i++) {
+              const link = links[i];
+              const href = link?.getAttribute('href') || '';
+              if (!href) continue;
+              const raw = (link.textContent || '').trim();
+              if (!raw) continue;
+              const lines = raw.split('\n');
+              for (const line of lines) {
+                if (isValidAuthorLine(line)) {
+                  return {
+                    authorName: cleanText(line),
+                    authorUrl: href,
+                  };
+                }
+              }
+            }
+          }
+        } catch (e) {
+          /* ignore */
+        }
+
+        return { authorName: '', authorUrl: '' };
+      }
+
       function matchesPostCard(el) {
         if (!el || !el.matches) {
           return false;
@@ -384,7 +502,8 @@ class Orchestrator {
         // Final fallback using postCardFallback
         const fb = sel.feed.postCardFallback;
         if (!fb) {
-          return [];
+          // Last resort: main2.py style selector (very broad, but we'll filter by text presence later)
+          return [...document.querySelectorAll(PY_POST_SELECTOR)];
         }
         const nodes = [...document.querySelectorAll(fb)];
         const byKey = new Map();
@@ -462,27 +581,32 @@ class Orchestrator {
           seenIds.add(postId);
         }
         
-        // Find post text using data-testid (most stable)
-        let textEl = el.querySelector('[data-testid="expandable-text-box"]');
-        if (!textEl) {
-          textEl = el.querySelector(sel.feed.postText);
-        }
-        
-        // Find author info - look for links to /in/ or /company/
-        const authorLink = el.querySelector('a[href*="/in/"], a[href*="/company/"]');
-        const authorUrl = authorLink?.href || '';
-        
-        // Author name - often in a paragraph near the author link
-        let authorName = '';
-        if (authorLink) {
-          // Look for name text near the link
-          const nameEl = authorLink.querySelector('p, span') || 
-                         authorLink.closest('div')?.querySelector('p.fa3ef5cf, p._3a5099c8');
-          authorName = nameEl?.textContent?.trim() || '';
-        }
-        if (!authorName) {
-          const authorEl = el.querySelector(sel.feed.postAuthor);
-          authorName = authorEl?.textContent?.trim() || '';
+        // Find post text using main2.py's selector first
+        let textEl = el.querySelector(PY_TEXT_SELECTOR);
+        if (!textEl) textEl = el.querySelector('[data-testid="expandable-text-box"]');
+        if (!textEl && sel.feed.postText) textEl = el.querySelector(sel.feed.postText);
+
+        // Author extraction: prefer main2.py logic, but fall back to existing JS approach
+        const pyAuthor = extractAuthorPyStyle(el);
+        let authorName = pyAuthor.authorName || '';
+        let authorUrl = pyAuthor.authorUrl || '';
+
+        if (!authorName && !authorUrl) {
+          // Previous logic fallback (kept because LinkedIn DOM varies by experiment)
+          const authorLink = el.querySelector('a[href*="/in/"], a[href*="/company/"]');
+          authorUrl = authorLink?.href || '';
+
+          if (authorLink) {
+            const nameEl =
+              authorLink.querySelector('p, span') ||
+              authorLink.closest('div')?.querySelector('p.fa3ef5cf, p._3a5099c8');
+            authorName = nameEl?.textContent?.trim() || '';
+          }
+          if (!authorName && sel.feed.postAuthor) {
+            const authorEl = el.querySelector(sel.feed.postAuthor);
+            authorName = authorEl?.textContent?.trim() || '';
+          }
+          authorName = cleanText(authorName);
         }
         
         // Timestamp - look for patterns like "1d", "2h", "1w"
@@ -505,11 +629,17 @@ class Orchestrator {
         const isJob = !!el.querySelector(sel.feed.jobBadge) || 
                       (el.textContent || '').toLowerCase().includes('job posting');
 
+        const text = cleanText(textEl?.textContent || '');
+        // Skip empty cards (broad selector can pick non-post listitems)
+        if (!text) {
+          continue;
+        }
+
         posts.push({
           postId: postId || `unknown_${Date.now()}_${Math.random()}`,
           authorName: authorName,
           authorUrl: authorUrl,
-          text: textEl?.textContent?.trim() || '',
+          text,
           timestamp: timestamp,
           isJobPosting: isJob,
           type: isJob ? 'job' : 'post',
@@ -556,6 +686,13 @@ class Orchestrator {
 
   /** Find post card by URN in componentkey attribute */
   _componentKeySelector(postId) {
+    // Our extractor sometimes returns synthetic IDs like "feed_<hash>" when it
+    // can't find a real URN. Convert back to a componentkey fragment.
+    if (String(postId || '').startsWith('feed_')) {
+      const hash = String(postId).slice('feed_'.length);
+      const frag = this._escapeSelector(`expanded${hash}FeedType`);
+      return `[componentkey*="${frag}"]`;
+    }
     const id = this._escapeSelector(postId);
     return `[componentkey*="${id}"]`;
   }
@@ -570,7 +707,8 @@ class Orchestrator {
    * Post card scope: find the post card element containing the given postId
    * Tries multiple strategies: componentkey, role+componentkey, data-urn, class patterns
    */
-  _postCardScope(postId) {
+  _postCardScope(post) {
+    const postId = post?.postId;
     // Strategy 1: Find by componentkey containing the URN
     const byComponentKey = this.page
       .locator(`[role="listitem"]`)
@@ -592,7 +730,14 @@ class Orchestrator {
       .filter({ has: this.page.locator(this._dataUrnSelector(postId)) })
       .first();
 
-    return { byComponentKey, byDataUrn, byListitem, byLegacy };
+    // Strategy 5: As a last resort, locate a listitem by text snippet.
+    // This helps when postId is synthetic ("unknown_*") but post text is present.
+    const snippet = String(post?.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const byText = snippet
+      ? this.page.locator('[role="listitem"]').filter({ hasText: snippet }).first()
+      : this.page.locator('__never__');
+
+    return { byComponentKey, byDataUrn, byListitem, byLegacy, byText };
   }
 
   /**
@@ -604,10 +749,10 @@ class Orchestrator {
         postId: post.postId,
         preview: comment.substring(0, 120),
       });
-      return;
+      return true;
     }
 
-    const { byComponentKey, byDataUrn, byListitem, byLegacy } = this._postCardScope(post.postId);
+    const { byComponentKey, byDataUrn, byListitem, byLegacy, byText } = this._postCardScope(post);
     
     // Try each strategy in order until we find the card
     let card = byComponentKey;
@@ -621,8 +766,11 @@ class Orchestrator {
       card = byLegacy;
     }
     if ((await card.count()) === 0) {
+      card = byText;
+    }
+    if ((await card.count()) === 0) {
       logger.warn('Could not find post element for commenting', { postId: post.postId });
-      return;
+      return false;
     }
 
     // Find and click the comment button
@@ -658,7 +806,7 @@ class Orchestrator {
       await this._sleep(this._randomDelay(400, 1200));
     } else {
       logger.warn('Comment button not found for post', { postId: post.postId });
-      return;
+      return false;
     }
 
     // Wait for comment input to appear
@@ -682,7 +830,7 @@ class Orchestrator {
     await inputLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => null);
     if ((await inputLoc.count()) === 0) {
       logger.warn('Comment input not found after clicking comment button');
-      return;
+      return false;
     }
 
     await this._sleep(this.timing.getActionDelay('before_typing'));
@@ -711,6 +859,7 @@ class Orchestrator {
       logger.warn('Comment submit control not found');
     }
     await this._sleep(this._randomDelay(500, 1500));
+    return true;
   }
 
   async _updateDailyStats() {
