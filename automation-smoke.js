@@ -50,13 +50,11 @@ config.dryRun = true;
   let prevPostCount = 0;
   
   for (let i = 0; i < 5; i++) {
-    // Scroll the container directly
+    // Use scrollIntoView on the last post - works with LinkedIn's virtual scroller
     await o.page.evaluate(() => {
-      const feed = document.querySelector('#workspace') || document.querySelector('main');
-      if (feed) {
-        feed.scrollBy({ top: 1200, behavior: 'smooth' });
-      } else {
-        window.scrollBy({ top: 1200, behavior: 'smooth' });
+      const posts = document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]');
+      if (posts.length > 0) {
+        posts[posts.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
       }
     });
     await new Promise(r => setTimeout(r, 2000));
@@ -98,8 +96,8 @@ config.dryRun = true;
     { name: 'Author links', sel: selectors.feed.authorLink },
     { name: 'Comment buttons', sel: selectors.feed.commentButton },
     { name: 'Buttons with Comment text', sel: 'button:has-text("Comment")' },
-    { name: 'role=listitem elements', sel: '[role="listitem"]' },
-    { name: 'componentkey*=FeedType', sel: '[componentkey*="FeedType"]' },
+    { name: 'componentkey*=FeedType_MAIN_FEED', sel: '[componentkey*="FeedType_MAIN_FEED"]' },
+    { name: 'componentkey*=expanded', sel: '[componentkey*="expanded"]' },
   ];
   
   for (const test of selectorTests) {

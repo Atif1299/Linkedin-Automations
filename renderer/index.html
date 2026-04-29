@@ -1,46 +1,132 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-GB">
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schmoozzer automation</title>
+  <title>Schmoozzer — LinkedIn automation</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
-  <header class="header">
-    <h1>Schmoozzer</h1>
-    <p class="subtitle">LinkedIn automation dashboard</p>
-  </header>
+  <div class="app">
+    <header class="cmd" role="banner">
+      <div class="cmd-brand">
+        <h1 class="cmd-title">Schmoozzer</h1>
+        <p class="cmd-tag">LinkedIn engagement</p>
+        <span class="meta" id="header-date">—</span>
+      </div>
+      <div class="cmd-actions">
+        <div class="cmd-group">
+          <span class="cmd-label">Comments</span>
+          <button type="button" id="btn-start" class="btn primary">Start</button>
+          <button type="button" id="btn-stop" class="btn" disabled>Stop</button>
+        </div>
+        <div class="cmd-group">
+          <span class="cmd-label">Follows</span>
+          <button type="button" id="btn-follow-start" class="btn primary">Start</button>
+          <button type="button" id="btn-follow-stop" class="btn" disabled>Stop</button>
+        </div>
+      </div>
+      <p class="cmd-hint" id="cmd-hint" aria-live="polite"></p>
+    </header>
 
-  <main class="main">
-    <section class="controls">
-      <button type="button" id="btn-start" class="btn btn-primary">Start</button>
-      <button type="button" id="btn-stop" class="btn btn-secondary" disabled>Stop</button>
-    </section>
+    <main class="main">
+      <section class="panel status tone-idle" id="status-panel" aria-live="polite">
+        <div class="status-top">
+          <h2 class="status-head" id="status-headline">Connecting…</h2>
+          <span class="status-elapsed" id="status-elapsed"></span>
+        </div>
+        <p class="status-sub" id="status-sub"></p>
+        <div class="progress-wrap" id="progress-wrap" hidden>
+          <div class="progress-meta">
+            <span>Session comments</span>
+            <span id="progress-counts">0 / 0</span>
+          </div>
+          <div class="progress-track" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            aria-valuenow="0">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+        </div>
+        <p class="status-line" id="status-session" hidden></p>
+        <div class="status-line" id="status-follower" hidden></div>
+        <p class="poll-line"><span id="last-poll">—</span></p>
+      </section>
 
-    <section class="status-panel">
-      <h2>Status</h2>
-      <dl class="status-grid">
-        <dt>State</dt>
-        <dd id="status-state">—</dd>
-        <dt>Running</dt>
-        <dd id="status-running">—</dd>
-        <dt>Dry run</dt>
-        <dd id="status-dry-run">—</dd>
-        <dt>Comments today</dt>
-        <dd id="status-comments-today">—</dd>
-        <dt>Session</dt>
-        <dd id="status-session">—</dd>
-      </dl>
-    </section>
+      <section class="panel metrics" aria-label="Today’s numbers">
+        <div class="metric" title="Recorded comments for the dashboard date (plan + database).">
+          <span class="metric-label">Comments today</span>
+          <span class="metric-val" id="m-comments">—</span>
+        </div>
+        <div class="metric" title="Sum from sessions started today (your timezone).">
+          <span class="metric-label">Posts scanned</span>
+          <span class="metric-val" id="m-scanned">—</span>
+        </div>
+        <div class="metric" title="Sum from sessions started today (your timezone).">
+          <span class="metric-label">Posts skipped</span>
+          <span class="metric-val" id="m-skipped">—</span>
+        </div>
+        <div class="metric" title="Completed sessions in the daily plan or database.">
+          <span class="metric-label">Sessions today</span>
+          <span class="metric-val" id="m-sessions">—</span>
+        </div>
+      </section>
 
-    <section class="log-panel">
-      <h2>Log</h2>
-      <pre id="activity-log" class="activity-log"></pre>
-    </section>
-  </main>
+      <section class="panel tabs" aria-label="Diagnostics and comments">
+        <input type="radio" name="dash-tab" id="tab-diag" class="tab-input" checked />
+        <input type="radio" name="dash-tab" id="tab-com" class="tab-input" />
+        <div class="tab-list" role="tablist">
+          <label class="tab-label" for="tab-diag" role="tab">Diagnostics</label>
+          <label class="tab-label" for="tab-com" role="tab">Recent comments</label>
+        </div>
+        <div class="tab-panel tab-panel-diag" id="panel-diag" role="tabpanel">
+          <p class="enrich-row">
+            <span>Enriched <strong id="en-rich">—</strong></span>
+            <span>Pending <strong id="en-pend">—</strong></span>
+            <span>Failed <strong id="en-fail">—</strong></span>
+            <span>API err <strong id="en-err">—</strong></span>
+          </p>
+          <dl class="dl">
+            <dt>Dry run</dt>
+            <dd id="kv-dry">—</dd>
+            <dt>Engine</dt>
+            <dd id="kv-state">—</dd>
+            <dt>Session</dt>
+            <dd id="kv-session">—</dd>
+            <dt>Daily plan</dt>
+            <dd id="kv-plan">—</dd>
+            <dt>Follow queue</dt>
+            <dd id="kv-fq">—</dd>
+            <dt>Followed (DB)</dt>
+            <dd id="kv-fd">—</dd>
+            <dt>Last follow run</dt>
+            <dd id="kv-fl">—</dd>
+          </dl>
+          <p class="log-label">Local log</p>
+          <pre id="activity-log" class="log" aria-live="polite"></pre>
+        </div>
+        <div class="tab-panel tab-panel-com" id="panel-com" role="tabpanel">
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Post ID</th>
+                  <th>Status</th>
+                  <th>Snippet</th>
+                </tr>
+              </thead>
+              <tbody id="comment-tbody">
+                <tr>
+                  <td colspan="4" class="muted">No data yet</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script src="dashboard.js"></script>
 </body>

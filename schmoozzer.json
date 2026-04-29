@@ -3,6 +3,7 @@
   "supabaseKey": "YOUR_SUPABASE_ANON_KEY",
   "commentApiUrl": "http://127.0.0.1:8000/generate-comment",
   "userDataDir": "./chrome-data",
+  "dashboardTimezone": "Europe/London",
   "timing": {
     "operatingHours": {
       "start": 1.3333333333333333,

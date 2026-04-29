@@ -44,7 +44,7 @@ const selectors = require('./linkedin-selectors');
   
   // Find the first post card
   console.log('5. Finding first post card...');
-  const postCards = await page.locator('[role="listitem"][componentkey*="FeedType"]').all();
+  const postCards = await page.locator('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]').all();
   console.log(`   Found ${postCards.length} post cards`);
   
   if (postCards.length === 0) {

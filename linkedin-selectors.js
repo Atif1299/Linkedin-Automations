@@ -8,20 +8,23 @@
 
 module.exports = {
   feed: {
-    /** Main feed region - primary is data-testid which is stable */
-    container: '[data-testid="mainFeed"], [data-component-type="LazyColumn"]',
+    /** Main feed content list - where posts are rendered */
+    container: '[data-testid="mainFeed"]',
+
+    /** Scroll viewport - the actual scrollable element (NOT mainFeed which is content) */
+    scrollContainer: 'main#workspace, div[role="main"][data-sdui-screen*="MainFeed"]',
 
     /**
-     * Post card detection - uses role="listitem" with componentkey pattern
-     * These are the actual feed post containers in current LinkedIn DOM
+     * Post card detection - divs with componentkey containing FeedType_MAIN_FEED_RELEVANCE
+     * These are nested inside the mainFeed container, class _4ee1af23 with componentkey
      */
-    postCard: '[role="listitem"][componentkey*="FeedType"], [role="listitem"][componentkey*="expanded"]',
+    postCard: '[componentkey*="FeedType_MAIN_FEED_RELEVANCE"], [componentkey*="expanded"][componentkey*="FeedType"]',
 
     /** Single selector for walk-up / matches() in browser evaluate */
-    postCardPrimary: '[role="listitem"][componentkey*="FeedType"]',
+    postCardPrimary: '[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
 
     /** Fallback when primary doesn't match (A/B tests, layout changes) */
-    postCardFallback: 'div._2174b9ce._04cc2b4d[role="listitem"], div[componentkey*="FeedType_MAIN_FEED"]',
+    postCardFallback: 'div._4ee1af23[componentkey*="expanded"], div[componentkey*="FeedType_MAIN_FEED"]',
 
     /** Screen reader indicator that confirms this is a feed post */
     postIndicator: 'h2 span.dec01ee6',
@@ -74,10 +77,10 @@ module.exports = {
     showMoreText: '[data-testid="expandable-text-button"], button:has(span:text("more"))',
 
     /** Job post indicators to skip */
-    jobBadge: '.job-posting-badge, .feed-shared-job-posting-card, [componentkey*="jobPosting"]',
+    jobBadge: '[componentkey*="jobPosting"], [data-testid*="job-posting"]',
 
     /** Reshare indicator */
-    reshareIndicator: '[componentkey*="reshared"], .feed-shared-update-v2__reshared-update',
+    reshareIndicator: '[componentkey*="reshared"]',
 
     /** Social actions bar containing Like, Comment, Repost, Send */
     socialActionsBar: 'div._309883cc._9a47c768, div[componentkey*="socialActionBar"]',
@@ -105,11 +108,11 @@ module.exports = {
   },
 
   companyPage: {
-    /** Follow/Following button on company pages */
-    followButton: 'button.org-company-follow-button',
+    /** Follow/Following button on company pages - from top card */
+    followButton: '.org-top-card-primary-actions__inner button.org-company-follow-button, button.org-company-follow-button',
 
     /** Check if already following */
-    followingIndicator: 'button.org-company-follow-button.is-following, button[aria-label="Following"][aria-pressed="true"]',
+    followingIndicator: 'button.org-company-follow-button.is-following, button[aria-label="Following"]',
 
     /** Not following state */
     notFollowingButton: 'button.org-company-follow-button:not(.is-following)',
@@ -144,8 +147,8 @@ module.exports = {
   },
 
   general: {
-    /** Main scrollable container for feed */
-    scrollContainer: '[data-testid="mainFeed"], .scaffold-layout__main, .application-outlet',
+    /** Main scrollable viewport for feed */
+    scrollContainer: 'main#workspace, div[role="main"][data-sdui-screen*="MainFeed"]',
 
     /** Feed tab link */
     feedTab: 'a[href="/feed/"]',

@@ -331,12 +331,13 @@ class Orchestrator {
           return false;
         }
         
-        // Check role="listitem" with componentkey containing FeedType (new LinkedIn layout)
-        if (el.getAttribute('role') === 'listitem') {
-          const ck = el.getAttribute('componentkey') || '';
-          if (ck.includes('FeedType') || ck.includes('expanded')) {
-            return true;
-          }
+        // Check componentkey containing FeedType_MAIN_FEED_RELEVANCE (current LinkedIn layout)
+        const ck = el.getAttribute('componentkey') || '';
+        if (ck.includes('FeedType_MAIN_FEED_RELEVANCE')) {
+          return true;
+        }
+        if (ck.includes('expanded') && ck.includes('FeedType')) {
+          return true;
         }
         
         // Try selector-based matching
@@ -349,34 +350,35 @@ class Orchestrator {
             /* ignore */
           }
         }
-        const parts = String(sel.feed.postCard || '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        for (const part of parts) {
-          try {
-            if (el.matches(part)) {
-              return true;
-            }
-          } catch (e) {
-            /* ignore */
-          }
-        }
         
-        // Fallback class checks
+        // Fallback class checks for post cards
         const cls = el.className && String(el.className);
-        return !!(cls && (cls.includes('_2174b9ce') || cls.includes('_04cc2b4d') || cls.includes('feed-shared')));
+        return !!(cls && cls.includes('_4ee1af23'));
       }
 
       function collectPostRoots() {
-        // Primary: find elements by role="listitem" with FeedType in componentkey
-        let list = [...document.querySelectorAll('[role="listitem"][componentkey*="FeedType"]')];
+        // Get the feed container first to scope our queries
+        const feedContainer = document.querySelector('[data-testid="mainFeed"]') ||
+                              document.querySelector('[data-component-type="LazyColumn"]');
+        
+        if (!feedContainer) {
+          return [];
+        }
+
+        // Primary: find elements with componentkey containing FeedType_MAIN_FEED_RELEVANCE
+        let list = [...feedContainer.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]')];
         if (list.length > 0) {
           return list;
         }
         
-        // Fallback to selector-based collection
-        list = [...document.querySelectorAll(sel.feed.postCard)];
+        // Secondary: find elements with componentkey containing expanded and FeedType
+        list = [...feedContainer.querySelectorAll('[componentkey*="expanded"][componentkey*="FeedType"]')];
+        if (list.length > 0) {
+          return list;
+        }
+        
+        // Fallback to selector-based collection within feed container
+        list = [...feedContainer.querySelectorAll(sel.feed.postCard)];
         if (list.length > 0) {
           return list;
         }
@@ -386,7 +388,7 @@ class Orchestrator {
         if (!fb) {
           return [];
         }
-        const nodes = [...document.querySelectorAll(fb)];
+        const nodes = [...feedContainer.querySelectorAll(fb)];
         const byKey = new Map();
         for (const node of nodes) {
           const ck = node.getAttribute('componentkey') || '';
@@ -394,16 +396,7 @@ class Orchestrator {
           if (byKey.has(key)) {
             continue;
           }
-          let card = node;
-          let p = node.parentElement;
-          for (let d = 0; d < 10 && p; d++) {
-            if (matchesPostCard(p)) {
-              card = p;
-              break;
-            }
-            p = p.parentElement;
-          }
-          byKey.set(key, card);
+          byKey.set(key, node);
         }
         return [...byKey.values()];
       }
@@ -568,31 +561,31 @@ class Orchestrator {
 
   /**
    * Post card scope: find the post card element containing the given postId
-   * Tries multiple strategies: componentkey, role+componentkey, data-urn, class patterns
+   * Tries multiple strategies based on current LinkedIn DOM structure
    */
   _postCardScope(postId) {
-    // Strategy 1: Find by componentkey containing the URN
+    // Strategy 1: Find by componentkey containing the post ID within mainFeed
     const byComponentKey = this.page
-      .locator(`[role="listitem"]`)
+      .locator('[data-testid="mainFeed"] [componentkey*="FeedType_MAIN_FEED"]')
       .filter({ has: this.page.locator(this._componentKeySelector(postId)) })
       .first();
     
     // Strategy 2: Find by data-urn attribute
     const byDataUrn = this.page.locator(this._dataUrnSelector(postId)).first();
     
-    // Strategy 3: Find listitem containing text that matches (fallback)
-    const byListitem = this.page
-      .locator('[role="listitem"][componentkey*="FeedType"]')
+    // Strategy 3: Find by componentkey with expanded pattern
+    const byExpanded = this.page
+      .locator('[componentkey*="expanded"][componentkey*="FeedType"]')
       .filter({ has: this.page.locator(this._componentKeySelector(postId)) })
       .first();
     
-    // Strategy 4: Legacy class-based lookup
-    const byLegacy = this.page
-      .locator('.feed-shared-update-v2')
-      .filter({ has: this.page.locator(this._dataUrnSelector(postId)) })
+    // Strategy 4: Find by class pattern
+    const byClass = this.page
+      .locator('div._4ee1af23[componentkey*="expanded"]')
+      .filter({ has: this.page.locator(this._componentKeySelector(postId)) })
       .first();
 
-    return { byComponentKey, byDataUrn, byListitem, byLegacy };
+    return { byComponentKey, byDataUrn, byExpanded, byClass };
   }
 
   /**
@@ -607,18 +600,18 @@ class Orchestrator {
       return;
     }
 
-    const { byComponentKey, byDataUrn, byListitem, byLegacy } = this._postCardScope(post.postId);
+    const { byComponentKey, byDataUrn, byExpanded, byClass } = this._postCardScope(post.postId);
     
     // Try each strategy in order until we find the card
     let card = byComponentKey;
     if ((await card.count()) === 0) {
-      card = byListitem;
+      card = byExpanded;
+    }
+    if ((await card.count()) === 0) {
+      card = byClass;
     }
     if ((await card.count()) === 0) {
       card = byDataUrn;
-    }
-    if ((await card.count()) === 0) {
-      card = byLegacy;
     }
     if ((await card.count()) === 0) {
       logger.warn('Could not find post element for commenting', { postId: post.postId });

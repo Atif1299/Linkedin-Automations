@@ -25,86 +25,53 @@ class HumanScroller {
     return min + Math.random() * (max - min);
   }
 
-  async _getFeedContainer() {
-    const selectors = ['#workspace', 'main', '.scaffold-finite-scroll'];
-    for (const selector of selectors) {
-      const el = await this.page.$(selector);
-      if (el) return el;
-    }
-    return null;
-  }
-
   /**
-   * Scroll down by a random distance with easing
+   * Scroll down by scrolling the last visible post into view
+   * LinkedIn uses a virtual scroller - element.scrollIntoView() works reliably
    */
   async scrollDown(distance) {
-    const scrollDist = distance || this._randomDelay(
-      this.config.distanceMin,
-      this.config.distanceMax
-    );
-    const delta = Math.round(scrollDist);
-    const container = await this._getFeedContainer();
-
-    if (this.config.programmaticFeedScroll) {
-      if (container) {
-        // Bulletproof scroll: directly manipulate the container's scroll position smoothly
-        await container.evaluate((el, y) => el.scrollBy({ top: y, behavior: 'smooth' }), delta);
-      } else {
-        // Fallback
-        await this.page.keyboard.press('PageDown');
-        await this._sleep(100);
-        await this.page.keyboard.press('PageDown');
+    // Find the last visible post and scroll it into view
+    // This triggers LinkedIn's lazy loading to add more posts
+    const scrolled = await this.page.evaluate(() => {
+      // Find all feed posts using componentkey pattern
+      const posts = document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]');
+      if (posts.length === 0) {
+        // Fallback: try other selectors
+        const altPosts = document.querySelectorAll('[data-testid="mainFeed"] > div > div');
+        if (altPosts.length > 2) {
+          const lastPost = altPosts[altPosts.length - 1];
+          lastPost.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          return true;
+        }
+        return false;
       }
       
-      // Wait for content to load
-      await this._sleep(this._randomDelay(400, 800));
-      return;
-    }
+      // Scroll the last post into view
+      const lastPost = posts[posts.length - 1];
+      lastPost.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      return true;
+    });
 
-    const fast = this.config.fastScroll;
-    const steps = fast
-      ? 3 + Math.floor(Math.random() * 2)
-      : 8 + Math.floor(Math.random() * 6);
-    const stepSize = scrollDist / steps;
-    const stepSleepMin = fast ? 6 : 15;
-    const stepSleepMax = fast ? 18 : 40;
-    const settleMin = fast ? 40 : 100;
-    const settleMax = fast ? 120 : 300;
-
-    for (let i = 0; i < steps; i++) {
-      const progress = i / steps;
-      const easedStep = stepSize * (1 - Math.pow(progress, 2) * 0.5);
-
-      if (container) {
-        await container.evaluate((el, y) => el.scrollBy(0, y), easedStep);
-      } else {
-        await this.page.mouse.wheel(0, easedStep);
-      }
-      await this._sleep(this._randomDelay(stepSleepMin, stepSleepMax));
-    }
-
-    await this._sleep(this._randomDelay(settleMin, settleMax));
+    // Wait for content to load
+    await this._sleep(this._randomDelay(800, 1500));
+    return scrolled;
   }
 
   /**
    * Scroll back up slightly (like scrolling past something and coming back)
    */
   async scrollBackUp(distance) {
-    const scrollDist = distance || this._randomDelay(100, 250);
-    const steps = 5 + Math.floor(Math.random() * 3);
-    const stepSize = scrollDist / steps;
-    const container = await this._getFeedContainer();
-
-    for (let i = 0; i < steps; i++) {
-      if (container) {
-        await container.evaluate((el, y) => el.scrollBy(0, -y), stepSize);
-      } else {
-        await this.page.mouse.wheel(0, -stepSize);
+    // Scroll a post near the top into view
+    await this.page.evaluate(() => {
+      const posts = document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]');
+      if (posts.length > 2) {
+        // Scroll to a post 2-3 positions from current view
+        const targetIndex = Math.max(0, posts.length - 3);
+        posts[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-      await this._sleep(this._randomDelay(20, 50));
-    }
+    });
 
-    await this._sleep(this._randomDelay(200, 500));
+    await this._sleep(this._randomDelay(300, 600));
   }
 
   /**
@@ -157,35 +124,28 @@ class HumanScroller {
         await this._sleep(this._randomDelay(500, 1500));
       }
 
-      // Check if we've reached the end of loaded content
-      const atBottom = await this.page.evaluate(() => {
-        const container = document.querySelector('#workspace') || document.querySelector('main');
-        if (container) {
-          return container.scrollTop + container.clientHeight >= container.scrollHeight - 200;
-        }
-        const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-        const scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
-        const clientHeight = document.documentElement.clientHeight;
-        return scrollTop + clientHeight >= scrollHeight - 200;
+      // Check if we've reached the end by seeing if new posts loaded
+      const postCountBefore = await this.page.evaluate(() => {
+        return document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]').length;
       });
 
-      if (atBottom) {
-        // Wait for more content to load
-        await this._sleep(this._randomDelay(2000, 4000));
+      // Wait for potential new content
+      await this._sleep(this._randomDelay(1000, 2000));
 
-        // Check again — if still at bottom, we're done
-        const stillAtBottom = await this.page.evaluate(() => {
-          const container = document.querySelector('#workspace') || document.querySelector('main');
-          if (container) {
-            return container.scrollTop + container.clientHeight >= container.scrollHeight - 200;
-          }
-          const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-          const scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
-          const clientHeight = document.documentElement.clientHeight;
-          return scrollTop + clientHeight >= scrollHeight - 200;
+      const postCountAfter = await this.page.evaluate(() => {
+        return document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]').length;
+      });
+
+      // If no new posts loaded after scrolling, we might be at the end
+      if (postCountAfter <= postCountBefore) {
+        // Wait longer and check again
+        await this._sleep(this._randomDelay(2000, 3000));
+
+        const finalCount = await this.page.evaluate(() => {
+          return document.querySelectorAll('[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]').length;
         });
 
-        if (stillAtBottom) break;
+        if (finalCount <= postCountBefore) break;
       }
     }
 
@@ -199,30 +159,12 @@ class HumanScroller {
     const element = await this.page.$(selector);
     if (!element) return false;
 
-    const box = await element.boundingBox();
-    if (!box) return false;
+    // Use scrollIntoView which works with LinkedIn's virtual scroller
+    await element.evaluate((el) => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
 
-    const viewport = this.page.viewportSize();
-    const targetY = box.y - viewport.height * 0.3; // Position element at ~30% from top
-
-    // Scroll in chunks toward the target
-    let currentScroll = await this.page.evaluate(() =>
-      document.documentElement.scrollTop || document.body.scrollTop
-    );
-
-    const distance = targetY - currentScroll;
-    if (Math.abs(distance) < 50) return true;
-
-    const direction = distance > 0 ? 1 : -1;
-    const chunks = 3 + Math.floor(Math.random() * 4);
-    const chunkSize = distance / chunks;
-
-    for (let i = 0; i < chunks; i++) {
-      await this.page.mouse.wheel(0, chunkSize);
-      await this._sleep(this._randomDelay(50, 120));
-    }
-
-    await this._sleep(this._randomDelay(200, 500));
+    await this._sleep(this._randomDelay(300, 600));
     return true;
   }
 
